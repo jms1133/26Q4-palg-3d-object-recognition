@@ -1,0 +1,7 @@
+# Core Computer Vision Stack 
+opencv-python>=5.0.0 
+numpy>=2.5.4
+
+# Interactive Development ipykernel
+ipykernel>=7.4.0
+matplotlib

@@ -30,6 +30,33 @@ def _quad_squareness(pts):
     return float(min(sides) / (max(sides) + 1e-6))
 
 
+def _touches_border(quad, img_w, img_h, margin=2):
+    """Return True if any corner of the quad lies on the image border.
+
+    The real sheet is surrounded by desk, so its detected corners never sit at
+    the very edge of the frame. In contrast, a failed detection that grabs the
+    whole dim image produces a quad pinned to the image corners. Rejecting
+    border-touching quads removes that failure mode regardless of lighting.
+
+    Args:
+        quad: A (4, 2) array of corner points.
+        img_w: Image width in pixels.
+        img_h: Image height in pixels.
+        margin: How close to an edge (in pixels) still counts as touching.
+
+    Returns:
+        True if the quad hugs the image border and should be rejected.
+    """
+    xs = quad[:, 0]
+    ys = quad[:, 1]
+    return bool(
+        np.any(xs <= margin)
+        or np.any(ys <= margin)
+        or np.any(xs >= img_w - 1 - margin)
+        or np.any(ys >= img_h - 1 - margin)
+    )
+
+
 def _extract_frame_quad(dark_mask, image_area, min_area_ratio):
     """Find the largest dark contour and reduce it to a 4-corner polygon.
 
@@ -41,6 +68,7 @@ def _extract_frame_quad(dark_mask, image_area, min_area_ratio):
     Returns:
         A (4, 2) float32 array of corners, or None if no suitable quad is found.
     """
+    img_h, img_w = dark_mask.shape[:2]
     contours, _ = cv2.findContours(
         dark_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
     )
@@ -57,11 +85,17 @@ def _extract_frame_quad(dark_mask, image_area, min_area_ratio):
     for eps_factor in np.linspace(0.02, 0.08, 7):
         approx = cv2.approxPolyDP(largest, eps_factor * perimeter, True)
         if len(approx) == 4:
-            return approx.reshape(4, 2).astype(np.float32)
+            quad = approx.reshape(4, 2).astype(np.float32)
+            # Discard quads pinned to the image edge: at high thresholds the dim
+            # desk can form a full-frame square that otherwise scores as "most
+            # square-like" and hijacks detection.
+            if _touches_border(quad, img_w, img_h):
+                return None
+            return quad
     return None
 
 
-def find_sheet_corners(img_bgr, dark_threshold=None, min_area_ratio=0.2):
+def find_sheet_corners(img_bgr, dark_threshold=None, min_area_ratio=0.15):
     """Detect the 4 corners of the black frame surrounding the sheet.
 
     Strategy: the thin black border plus the solid black corner squares form one

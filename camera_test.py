@@ -1,9 +1,15 @@
+import os
+from datetime import datetime
+
 import cv2
+
+# Folder where captured frames are saved (created on first capture).
+CAPTURE_DIR = "images/camera_test"
 
 # Initialize the video capture object. 
 # 0 is usually the built-in Mac FaceTime camera. 
 # 1 is usually the first plugged-in USB webcam (your Aukey).
-camera_index = 1 
+camera_index = 0
 cap = cv2.VideoCapture(camera_index)
 
 if not cap.isOpened():
@@ -11,7 +17,7 @@ if not cap.isOpened():
     print("Try changing camera_index to 0 or 2.")
     exit()
 
-print("Camera successfully opened. Press 'q' to quit.")
+print("Camera successfully opened. Press 'c' to capture a frame, 'q' to quit.")
 
 while True:
     # Read a frame from the camera
@@ -24,9 +30,18 @@ while True:
     # Display the frame
     cv2.imshow("Aukey Webcam Test", frame)
     
-    # Wait for 1 millisecond and check if the 'q' key is pressed
-    if cv2.waitKey(1) == ord('q'):
+    # Wait briefly for a key press. waitKey returns -1 if no key was pressed.
+    key = cv2.waitKey(1) & 0xFF
+    if key == ord('q'):
         break
+    if key == ord('c'):
+        # Save the current frame with a timestamped filename so captures never
+        # overwrite each other. Use the raw (un-annotated) frame for later CV.
+        os.makedirs(CAPTURE_DIR, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        path = os.path.join(CAPTURE_DIR, f"capture_{timestamp}.png")
+        cv2.imwrite(path, frame)
+        print(f"Captured frame -> {path}")
 
 # Clean up resources
 cap.release()

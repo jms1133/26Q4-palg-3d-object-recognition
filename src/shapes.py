@@ -26,9 +26,10 @@ measured features that separate the shapes are:
       which runs before this classifier in the final pipeline.
 
 Public API:
-    shape_metrics(contour)              -> dict of raw geometric features
-    classify_shape(contour)             -> shape label string
-    describe_object(contour, hsv, size) -> dict with shape, color, position, area
+    shape_metrics(contour)                     -> dict of raw geometric features
+    classify_shape(contour)                    -> shape label string
+    constrain_shape_to_color(shape, color)     -> shape corrected by color prior
+    describe_object(contour, hsv, size)        -> dict with shape, color, position, area
 """
 
 import cv2
@@ -58,6 +59,21 @@ _INTERIOR_KERNEL = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
 
 # Map a stable vertex count to its polygon label.
 _VERTEX_SHAPES = {3: "triangle", 4: "quadrilateral", 5: "pentagon"}
+
+# Shapes that physically exist in each color of the object set. This domain prior
+# resolves a specific failure mode of the touching-object watershed split: when
+# two same-color objects are cut apart, the straight cut line meets the object's
+# edge at an angle and adds a spurious vertex, so a cube silhouette can read as a
+# pentagon. For a color whose set contains exactly ONE shape, any other geometric
+# result is necessarily such an artifact and is snapped back to the single valid
+# shape. Colors with several valid shapes are left untouched, so a genuine
+# pentagon or triangle is never overridden.
+ALLOWED_SHAPES = {
+    "blue": {"quadrilateral"},
+    "red": {"quadrilateral", "triangle"},
+    "gold": {"quadrilateral", "pentagon"},
+    "green": {"pentagon", "triangle"},
+}
 
 
 def shape_metrics(contour):
@@ -131,6 +147,28 @@ def classify_shape(contour):
     return _VERTEX_SHAPES.get(m["vertices"], "unknown")
 
 
+def constrain_shape_to_color(shape, color_name):
+    """Snap a raw shape label to the color's set of physically possible shapes.
+
+    This corrects the watershed split artifact described on ALLOWED_SHAPES: a cut
+    cube can gain a spurious vertex and read as a pentagon. When a color admits
+    exactly one shape, any mismatch is such an artifact and is replaced by that
+    single valid shape. For colors with several valid shapes, or an unknown color,
+    the raw label is returned unchanged so genuine shapes are never overridden.
+
+    Args:
+        shape: The raw shape label from classify_shape.
+        color_name: The object's classified color.
+
+    Returns:
+        The possibly corrected shape label.
+    """
+    allowed = ALLOWED_SHAPES.get(color_name)
+    if allowed and len(allowed) == 1 and shape not in allowed:
+        return next(iter(allowed))
+    return shape
+
+
 def sample_contour_color(contour, hsv):
     """Return the color label of a contour's eroded interior.
 
@@ -199,9 +237,12 @@ def describe_object(contour, hsv, size):
 
     norm = calibration.pixel_to_normalized(centroid[0], centroid[1], size)
 
+    object_color = sample_contour_color(contour, hsv)
+    object_shape = constrain_shape_to_color(classify_shape(contour), object_color)
+
     return {
-        "shape": classify_shape(contour),
-        "color": sample_contour_color(contour, hsv),
+        "shape": object_shape,
+        "color": object_color,
         "position": norm,
         "centroid": centroid,
         "area": cv2.contourArea(contour),

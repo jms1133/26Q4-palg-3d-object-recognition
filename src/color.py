@@ -7,24 +7,23 @@ objects by hue while rejecting two kinds of unwanted pixels:
     - the matte WHITE sheet, which has very low saturation, and
     - dark CAST SHADOWS from the 3D objects, which have very low value (V).
 
-The thresholds below were measured from white-balanced flash captures of each
-object pair (one pair per color) on the real sheet. Those measurements drove
-three design choices that a naive per-color ``inRange`` cannot handle:
+The object set has four colors: red, gold, green and blue. The thresholds below
+were measured from warped captures of the real objects on the sheet. Those
+measurements drove two design choices that a naive per-color ``inRange`` cannot
+handle:
 
-    1. The pastel objects are genuinely low-saturation (purple S~53, pink S~77),
-       so a single high SAT_FLOOR would erase them. The floor is lowered and the
-       white sheet is instead rejected by combining low saturation WITH high
-       value (the sheet is both desaturated and bright; pastels are not).
-    2. The dark green objects reflect very little light (V~15) but keep a correct
-       high-saturation green hue. Green therefore gets its own low value floor so
-       it is not discarded as shadow.
-    3. Red (S~180) and pink (S~77) share almost the same hue near the 0/180 seam.
-       Hue alone cannot separate them; saturation does (split at RED_PINK_SAT).
+    1. The white sheet is rejected by combining low saturation WITH high value
+       (the sheet is both desaturated and bright), rather than by a single high
+       saturation floor that could also erase legitimately duller object bodies.
+    2. Green and blue sit in adjacent hue bands and the green objects reach up to
+       H~85 at their edges, so the green/blue boundary is placed between the two
+       measured clusters (green medians H~74-79, blue medians H~101-106) to keep
+       them disjoint.
 
-Because of these interactions, classification is expressed as an ordered set of
-rules (see ``classify_color_hsv``) rather than independent hue bands. The
-``COLOR_RANGES`` table is retained for building segmentation masks via
-``cv2.inRange`` and is derived from the same measured bounds.
+Classification is expressed as an ordered set of rules (see
+``classify_color_hsv``) rather than independent hue bands. The ``COLOR_RANGES``
+table is retained for building segmentation masks via ``cv2.inRange`` and is
+derived from the same measured bounds.
 
 Public API:
     build_color_mask(hsv, color_name) -> cleaned binary mask for one color
@@ -35,9 +34,9 @@ Public API:
 import cv2
 import numpy as np
 
-# General saturation floor for "this pixel belongs to a colored object". Set low
-# so the pale pastels (purple ~53, pink ~77) survive. The white sheet is not
-# rejected by this floor alone but by SHEET_SAT_MAX combined with SHEET_VALUE_MIN.
+# General saturation floor for "this pixel belongs to a colored object". The
+# white sheet is not rejected by this floor alone but by SHEET_SAT_MAX combined
+# with SHEET_VALUE_MIN.
 SAT_FLOOR = 30
 
 # Default value floor for chromatic objects. Most colors sit well above this;
@@ -50,13 +49,19 @@ VALUE_FLOOR = 40
 SHEET_SAT_MAX = 30
 SHEET_VALUE_MIN = 140
 
-# Dark green reflects little light (measured V~15) yet keeps a true, saturated
-# green hue, so it needs a much lower value floor than the other colors.
+# Green reflects relatively little light (measured V~120-150, lower at shadowed
+# edges) yet keeps a true, saturated green hue, so it uses a lower value floor
+# than the other colors to avoid being discarded as shadow.
 GREEN_VALUE_FLOOR = 10
 
-# Red and pink overlap in hue near the 0/180 seam and are separated by
-# saturation: vivid red (~180) versus pale pink (~77).
-RED_PINK_SAT = 120
+# Boundary hue between the green and blue bands. Green object edges reach up to
+# H~85 while blue bodies sit at H~101+, so splitting here keeps them disjoint.
+GREEN_BLUE_HUE = 90
+
+# Saturation floor for red. With no pink in the set, red no longer needs a high
+# split; a modest floor rejects the warm sheet cast (which appears near the 0/180
+# seam at low saturation) while still capturing the red bodies (measured S~120+).
+RED_SAT_FLOOR = 60
 
 # Gold needs a higher saturation floor than the other colors. The warm light cast
 # on the white sheet lands in the gold hue band at low saturation (measured ~30-60)
@@ -65,29 +70,22 @@ RED_PINK_SAT = 120
 GOLD_SAT_FLOOR = 75
 
 # Per-color HSV bounds as lists of (lower, upper) pairs, used to build
-# segmentation masks. These mirror the measured hue bands; red and pink share
-# the seam hues and are disambiguated by their saturation floors. Each color's
-# own value floor is applied (green is the low-value exception).
+# segmentation masks. These mirror the measured hue bands; red spans two sub-
+# ranges because its hue straddles the 0/180 seam. Each color's own value floor
+# is applied (green is the low-value exception).
 COLOR_RANGES = {
     "red": [
-        ((0, RED_PINK_SAT, VALUE_FLOOR), (12, 255, 255)),
-        ((168, RED_PINK_SAT, VALUE_FLOOR), (180, 255, 255)),
+        ((0, RED_SAT_FLOOR, VALUE_FLOOR), (12, 255, 255)),
+        ((168, RED_SAT_FLOOR, VALUE_FLOOR), (180, 255, 255)),
     ],
     "gold": [
         ((13, GOLD_SAT_FLOOR, VALUE_FLOOR), (34, 255, 255)),
     ],
     "green": [
-        ((40, SAT_FLOOR, GREEN_VALUE_FLOOR), (80, 255, 255)),
+        ((40, SAT_FLOOR, GREEN_VALUE_FLOOR), (GREEN_BLUE_HUE - 1, 255, 255)),
     ],
     "blue": [
-        ((85, SAT_FLOOR, VALUE_FLOOR), (110, 255, 255)),
-    ],
-    "pink": [
-        ((0, SAT_FLOOR, VALUE_FLOOR), (12, RED_PINK_SAT, 255)),
-        ((160, SAT_FLOOR, VALUE_FLOOR), (180, RED_PINK_SAT, 255)),
-    ],
-    "purple": [
-        ((120, SAT_FLOOR, VALUE_FLOOR), (160, 255, 255)),
+        ((GREEN_BLUE_HUE, SAT_FLOOR, VALUE_FLOOR), (120, 255, 255)),
     ],
 }
 
@@ -215,17 +213,16 @@ def classify_color_hsv(hsv_sample):
     glossy surfaces.
 
     The rules are applied in a deliberate ORDER because the measured colors
-    overlap in ways independent hue bands cannot resolve:
+    interact in ways independent hue bands cannot resolve:
 
-        1. Green is tested first on hue alone. The dark green objects have very
-           low value (V~15); testing them before the shadow guard prevents them
-           from being discarded as shadow.
+        1. Green is tested first on hue alone. The green objects can be fairly
+           dark at shadowed edges; testing them before the shadow guard prevents
+           them from being discarded as shadow.
         2. The shadow guard rejects truly black pixels.
         3. The sheet guard rejects pixels that are BOTH pale and bright (the
-           white sheet). Pale-but-dim pastels survive this.
-        4. Red versus pink: both sit near the 0/180 hue seam, so they are split
-           by saturation (vivid red vs pale pink), not hue.
-        5. The remaining hue bands (gold, blue, purple) are unambiguous.
+           white sheet).
+        4. The remaining hue bands (red, gold, blue) are unambiguous; red uses a
+           saturation floor to reject the warm sheet cast near the 0/180 seam.
 
     Args:
         hsv_sample: An (H, S, V) triple with H in [0, 180], S and V in [0, 255].
@@ -235,9 +232,9 @@ def classify_color_hsv(hsv_sample):
     """
     h, s, v = (float(hsv_sample[0]), float(hsv_sample[1]), float(hsv_sample[2]))
 
-    # 1. Green first: it is dark (low V) but keeps a saturated green hue, so it
-    #    must be caught before the shadow guard would reject it.
-    if 40 <= h <= 80 and s >= SAT_FLOOR and v >= GREEN_VALUE_FLOOR:
+    # 1. Green first: it can be dark at shadowed edges but keeps a saturated green
+    #    hue, so it must be caught before the shadow guard would reject it.
+    if 40 <= h < GREEN_BLUE_HUE and s >= SAT_FLOOR and v >= GREEN_VALUE_FLOOR:
         return "green"
 
     # 2. Truly black pixels are shadow.
@@ -250,16 +247,15 @@ def classify_color_hsv(hsv_sample):
     if s < SAT_FLOOR:
         return "white"
 
-    # 4. Red/pink share the hue seam near 0/180; separate them by saturation.
-    if h <= 12 or h >= 160:
-        return "red" if s >= RED_PINK_SAT else "pink"
+    # 4. Red sits near the 0/180 hue seam; a saturation floor rejects the warm
+    #    sheet cast that also lands there at low saturation.
+    if h <= 12 or h >= 168:
+        return "red" if s >= RED_SAT_FLOOR else "white"
 
-    # 5. Unambiguous hue bands. Gold uses a higher saturation floor to reject the
-    #    warm cast that the white sheet shows in the gold hue band.
+    # 5. Remaining unambiguous hue bands. Gold uses a higher saturation floor to
+    #    reject the warm cast that the white sheet shows in the gold hue band.
     if 13 <= h <= 34:
         return "gold" if s >= GOLD_SAT_FLOOR else "white"
-    if 85 <= h <= 110:
+    if GREEN_BLUE_HUE <= h <= 120:
         return "blue"
-    if 120 <= h <= 160:
-        return "purple"
     return "unknown"

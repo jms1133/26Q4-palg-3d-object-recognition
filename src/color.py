@@ -63,6 +63,13 @@ GREEN_BLUE_HUE = 90
 # seam at low saturation) while still capturing the red bodies (measured S~120+).
 RED_SAT_FLOOR = 60
 
+# Saturation floor for blue. Under cool lighting the white sheet's hue drifts into
+# the blue band at moderate saturation (measured up to S~55, flooding ~67% of the
+# canvas), which is too saturated for the pale-and-bright sheet guard to catch.
+# The real blue objects are far more saturated (S~120 median), so a dedicated
+# floor at 80 sits in the clean gap: it rejects the sheet while keeping the cubes.
+BLUE_SAT_FLOOR = 80
+
 # Gold needs a higher saturation floor than the other colors. The warm light cast
 # on the white sheet lands in the gold hue band at low saturation (measured ~30-60)
 # and would paint a false yellow halo across the background; the real yellow
@@ -85,7 +92,7 @@ COLOR_RANGES = {
         ((40, SAT_FLOOR, GREEN_VALUE_FLOOR), (GREEN_BLUE_HUE - 1, 255, 255)),
     ],
     "blue": [
-        ((GREEN_BLUE_HUE, SAT_FLOOR, VALUE_FLOOR), (120, 255, 255)),
+        ((GREEN_BLUE_HUE, BLUE_SAT_FLOOR, VALUE_FLOOR), (120, 255, 255)),
     ],
 }
 
@@ -252,10 +259,11 @@ def classify_color_hsv(hsv_sample):
     if h <= 12 or h >= 168:
         return "red" if s >= RED_SAT_FLOOR else "white"
 
-    # 5. Remaining unambiguous hue bands. Gold uses a higher saturation floor to
-    #    reject the warm cast that the white sheet shows in the gold hue band.
+    # 5. Remaining unambiguous hue bands. Gold and blue each use a higher
+    #    saturation floor to reject the warm/cool sheet cast that lands in their
+    #    hue bands at moderate saturation.
     if 13 <= h <= 34:
         return "gold" if s >= GOLD_SAT_FLOOR else "white"
     if GREEN_BLUE_HUE <= h <= 120:
-        return "blue"
+        return "blue" if s >= BLUE_SAT_FLOOR else "white"
     return "unknown"

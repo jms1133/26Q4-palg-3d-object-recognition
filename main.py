@@ -16,11 +16,15 @@ This ties the modules into one video loop, following the project pipeline:
 Controls:
     q - quit
     r - force re-analysis of the current frame
+    s - save the current canvas to a timestamped PNG
 
 Run from the project root so the ``src`` package resolves:
 
     python main.py
 """
+
+import os
+from datetime import datetime
 
 import cv2
 
@@ -30,9 +34,22 @@ from src.stability import StabilityDetector
 # Built-in Mac camera is 0; a plugged-in USB webcam is usually 1.
 CAMERA_INDEX = 0
 
+# Fixed manual exposure for the camera. Auto-exposure averages over the whole
+# frame, so the large dark background the calibration contrast needs pushes the
+# camera to over-expose, blowing bright colors (notably gold) to V=255 and
+# stripping their saturation. Locking exposure makes the background irrelevant to
+# brightness and keeps the tuned HSV thresholds valid run to run. MANUAL_EXPOSURE
+# is in the backend's own units and is camera-dependent: lower it until gold keeps
+# its color and the white sheet is no longer clipped. Set to None to leave the
+# camera on auto-exposure (e.g. if a camera does not support manual control).
+MANUAL_EXPOSURE = -6
+
 # Side length of the warped canvas in pixels. Must match the size passed to
 # describe_object so normalized coordinates are correct.
 WARP_SIZE = 800
+
+# Directory where captured canvas snapshots are written.
+CAPTURE_DIR = "images/main_test"
 
 # Target color buckets to detect, drawn from color.COLOR_RANGES.
 TARGET_COLORS = ("red", "gold", "green", "blue")
@@ -116,9 +133,41 @@ def draw_status(canvas, state, count):
     """
     status = "STABLE" if state.is_stable else "MOVING"
     banner = f"{status} | motion={state.motion:.3f} | objects={count}"
-    cv2.putText(canvas, banner, (10, 24), _FONT, 0.6, (0, 0, 0), 3, cv2.LINE_AA)
-    cv2.putText(canvas, banner, (10, 24), _FONT, 0.6, (255, 255, 255), 1,
-                cv2.LINE_AA)
+    cv2.putText(canvas, banner, (10, 24), _FONT, 0.6, (0, 0, 0), 1, cv2.LINE_AA)
+
+
+def lock_exposure(cap, exposure):
+    """Switch the camera to manual exposure at a fixed level.
+
+    Auto-exposure reacts to the dark background and over-exposes the scene; a fixed
+    exposure removes that coupling. On UVC/V4L2 backends CAP_PROP_AUTO_EXPOSURE is
+    0.25 for manual and 0.75 for auto. Support varies by camera and backend, so the
+    requested value is read back and reported rather than assumed to have taken.
+
+    Args:
+        cap: An opened cv2.VideoCapture.
+        exposure: The manual exposure level in the backend's units.
+    """
+    cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)
+    cap.set(cv2.CAP_PROP_EXPOSURE, exposure)
+    applied = cap.get(cv2.CAP_PROP_EXPOSURE)
+    print(f"Requested manual exposure {exposure}; camera reports {applied}.")
+
+
+def save_capture(canvas):
+    """Write the current canvas to a timestamped PNG in CAPTURE_DIR.
+
+    Args:
+        canvas: The warped BGR image (with overlays) to save.
+
+    Returns:
+        The path the image was written to.
+    """
+    os.makedirs(CAPTURE_DIR, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    path = os.path.join(CAPTURE_DIR, f"capture_{timestamp}.png")
+    cv2.imwrite(path, canvas)
+    return path
 
 
 def main():
@@ -128,11 +177,14 @@ def main():
         print(f"Error: cannot open camera at index {CAMERA_INDEX}.")
         return
 
+    if MANUAL_EXPOSURE is not None:
+        lock_exposure(cap, MANUAL_EXPOSURE)
+
     detector = StabilityDetector()
     prev_corners = None
     detections = []
 
-    print("Running. Press 'q' to quit, 'r' to force re-analysis.")
+    print("Running. Press 'q' to quit, 'r' to force re-analysis, 'c' to save a capture.")
     while True:
         ok, frame = cap.read()
         if not ok:
@@ -164,6 +216,9 @@ def main():
             break
         if key == ord("r"):
             detections = detect_objects(warped)
+        if key == ord("c"):
+            path = save_capture(canvas)
+            print(f"Capture: {path}")
 
     cap.release()
     cv2.destroyAllWindows()

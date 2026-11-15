@@ -18,11 +18,17 @@ Approach (distance transform + watershed):
 Isolated objects produce a single seed, so the split is a no-op for them and the
 original contour is returned unchanged.
 
-Limitation: watershed can still over-segment large, chunky 3D prisms whose top
+Limitation: watershed can still over-segment large, chunky 3D prisms whose lit
 faces create several distance-transform peaks of similar height. The minimum-
-separation merge reduces this but does not eliminate it for every arrangement;
-objects of clearly different sizes touching are the hardest case. Touching
-objects are nonetheless handled for the common cases, as required.
+separation merge reduces this but cannot eliminate it, because distance alone
+cannot distinguish two close peaks ON ONE big block from two genuinely separate
+small objects touching. Measured counterexample: two touching large red blocks
+only collapse to the correct 2 seeds at MIN_SEED_SEPARATION ~100-130, but two
+touching smaller blue cubes (centers <100 px apart) already merge to 1 at that
+same separation, so no single threshold satisfies both. The common cases
+(different-color touching, and moderately sized same-color touching such as the
+blue cubes at the default separation) are handled, as required; a tight cluster
+of large same-color 3D blocks is the documented hard case.
 
 Public API:
     separate_contour(blob_mask) -> list of per-object contours

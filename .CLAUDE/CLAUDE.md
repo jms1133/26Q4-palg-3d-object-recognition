@@ -20,6 +20,7 @@ The application processes a live video stream from a webcam to automatically ide
 * **No Pre-trained Deep Learning Models**: Use classical computer vision techniques (contours, HSV color segmentation, morphological operations, perspective transforms, heuristics). LLMs for object detection are strictly prohibited.
 * **English Code Standards**: All code comments, function names, and variable names **must be in English** (University grading requirement). You may converse with the student in German or English based on their prompt.
 * **AI Prompt & Tool Logging**: The student must log all AI prompts and tools used for their final documentation. Remind the user to record prompt wording, target models, and tool descriptions.
+* **Close-Session Ritual (ALWAYS on session close)**: Whenever a session is closed, you MUST update BOTH `.claude/session_log.md` (handover for the next agent: what was done, decisions, open items) AND `docs/prompts_log.md` (this session's prompts, verbatim as faithfully as possible, with the target model). Append a new dated session block to each; do not overwrite prior sessions.
 * **Written Report Requirements**: Minimum 5 pages covering Problem Statement, User Perspective Solution, Algorithm Description, and Conclusion, plus Appendices (Code in English, AI Prompts list, Tools list, Originality Declaration).
 
 ---
@@ -39,8 +40,9 @@ The application processes a live video stream from a webcam to automatically ide
 * **Touching Objects Allowed**: Objects resting side-by-side or touching along edges (**Berührungen**) are explicitly allowed and **must be handled by the algorithm**.
 
 ##### C. Physical Workspace Setup
-* **Surface**: A matte white 18 cm × 18 cm cardboard sheet placed on a dark/black base surface to ensure high background contrast.
-* **Corner Calibration Targets**: 4 solid black L-shaped corner brackets drawn at the outer corners of the white square.
+* **Surface**: A matte white 18 cm × 18 cm cardboard sheet (the "white canvas" / "wc") placed on a larger dark/black mat to ensure high background contrast. This white-on-black contrast is what calibration depends on.
+* **Camera Positioning (actual setup)**: The webcam sits on the laptop lid facing outward; the lid is opened to roughly 90° and the webcam is tilted down to get the most bird's-eye / zenital view of the canvas. Lighting should be well-lit and neutral in color. The setup must avoid casting shadows (e.g. the webcam's or lid's own shadow) onto the white canvas, since shadows reduce the white-on-black contrast and can distort color/shape detection. A mild perspective tilt is fine: calibration fits a perspective quad, not a strict top-down square.
+* **Calibration Method (IMPLEMENTED)**: The white canvas is detected directly as the largest bright blob against the dark mat (Otsu threshold on grayscale), and its contour is reduced to a 4-point perspective quad. **No corner markers are used.** White L-brackets may be printed on the mat as a human visual aid only; the algorithm does NOT rely on them. Do not reintroduce bracket/corner-marker detection.
 * **Verifiable Coordinate Ticks**: Border tick marks and labeled axis coordinates at `0.0`, `0.25`, `0.50`, `0.75`, and `1.0` along the perimeter to enable live visual verification by the lecturer during the presentation.
 
 ---
@@ -48,7 +50,7 @@ The application processes a live video stream from a webcam to automatically ide
 #### 5. Technical Architecture & Algorithmic Pipeline
 
 ##### A. Perspective Transformation & Calibration
-* Detect the 4 black L-corner brackets of the 18×18 cm sheet using `cv2.findContours` or corner detection.
+* Detect the white canvas as the largest bright blob against the dark mat: Otsu threshold (`cv2.threshold` with `THRESH_OTSU`) on a blurred grayscale frame, morphological open/close to clean the mask, then `cv2.findContours` and `cv2.approxPolyDP` to reduce the canvas contour to a 4-point perspective quad. A single corner dented by an overhanging object is reconstructed under the parallelogram assumption. **This is the implemented approach (see `src/calibration.py`); do NOT detect L-brackets or corner markers.**
 * Apply `cv2.getPerspectiveTransform` and `cv2.warpPerspective` to flatten the camera view into a normalized unit square coordinate system from `(0.0, 0.0)` (top-left) to `(1.0, 1.0)` (bottom-right).
 
 ##### B. Color Segmentation & Shadow Filtering
@@ -71,7 +73,7 @@ The application processes a live video stream from a webcam to automatically ide
 
 #### 6. Recommended Workflow & Implementation Progression
 When guiding the student, follow this logical step-by-step progression:
-1. **Workspace Calibration Module**: Detect the 4 corner markers and compute the perspective warp matrix to output `(0,0)` to `(1,1)`.
+1. **Workspace Calibration Module**: Detect the white canvas as the largest bright blob on the dark mat (Otsu threshold + contour-to-quad, with dented-corner repair) and compute the perspective warp matrix to output `(0,0)` to `(1,1)`. No corner markers are used.
 2. **HSV Thresholding & Shadow Removal Module**: Define HSV color boundaries and filter out shadow noise.
 3. **Per-Color & Watershed Segmentation Module**: Implement per-color masking and Watershed separation for touching objects.
 4. **Shape & Centroid Classification Module**: Implement `approxPolyDP` and circularity rules to extract object properties.

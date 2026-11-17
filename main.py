@@ -16,7 +16,7 @@ This ties the modules into one video loop, following the project pipeline:
 Controls:
     q - quit
     r - force re-analysis of the current frame
-    s - save the current canvas to a timestamped PNG
+    c - save the current canvas to a timestamped PNG
 
 Run from the project root so the ``src`` package resolves:
 
@@ -27,22 +27,15 @@ import os
 from datetime import datetime
 
 import cv2
+import numpy as np
 
 from src import calibration, color, segmentation, shapes
 from src.stability import StabilityDetector
 
-# Built-in Mac camera is 0; a plugged-in USB webcam is usually 1.
+# Index of the capture device. This is machine-dependent: the same USB webcam
+# can enumerate as 0 on one computer and 1 or 2 on another, and it is not always
+# distinct from any built-in camera. If the wrong device opens, try 0, 1, or 2.
 CAMERA_INDEX = 0
-
-# Fixed manual exposure for the camera. Auto-exposure averages over the whole
-# frame, so the large dark background the calibration contrast needs pushes the
-# camera to over-expose, blowing bright colors (notably gold) to V=255 and
-# stripping their saturation. Locking exposure makes the background irrelevant to
-# brightness and keeps the tuned HSV thresholds valid run to run. MANUAL_EXPOSURE
-# is in the backend's own units and is camera-dependent: lower it until gold keeps
-# its color and the white sheet is no longer clipped. Set to None to leave the
-# camera on auto-exposure (e.g. if a camera does not support manual control).
-MANUAL_EXPOSURE = -6
 
 # Side length of the warped canvas in pixels. Must match the size passed to
 # describe_object so normalized coordinates are correct.
@@ -51,13 +44,18 @@ WARP_SIZE = 800
 # Directory where captured canvas snapshots are written.
 CAPTURE_DIR = "images/main_test"
 
+# Black margin in pixels drawn around the warped canvas for DISPLAY ONLY. This is
+# a purely cosmetic frame so the canvas is not cropped flush to the window edge;
+# detection, coordinates and the warp itself are unaffected.
+DISPLAY_MARGIN = 60
+
 # Target color buckets to detect, drawn from color.COLOR_RANGES.
-TARGET_COLORS = ("red", "gold", "green", "blue")
+TARGET_COLORS = ("red", "yellow", "green", "blue")
 
 # BGR outline/label color per detected object color, for readable overlays.
 DRAW_COLORS = {
     "red": (0, 0, 255),
-    "gold": (0, 215, 255),
+    "yellow": (0, 215, 255),
     "green": (0, 180, 0),
     "blue": (255, 100, 0),
 }
@@ -112,14 +110,13 @@ def draw_detections(canvas, detections):
         label = f"{info['color']} {info['shape']}"
         coords = f"({norm_x:.2f}, {norm_y:.2f})"
 
-        # Draw the two text lines stacked above the centroid, each with a dark
-        # backing outline so they stay readable over any object color.
+        # Draw the two text lines stacked above the centroid in plain black. A
+        # single solid color keeps the labels easy to read and avoids the
+        # distracting colored text layer.
         lines = (label, coords)
         for i, text in enumerate(lines):
             y = cy - 10 - (len(lines) - 1 - i) * 18
-            cv2.putText(canvas, text, (cx + 8, y), _FONT, 0.5, (0, 0, 0), 3,
-                        cv2.LINE_AA)
-            cv2.putText(canvas, text, (cx + 8, y), _FONT, 0.5, draw_color, 1,
+            cv2.putText(canvas, text, (cx + 8, y), _FONT, 0.5, (0, 0, 0), 1,
                         cv2.LINE_AA)
 
 
@@ -136,22 +133,26 @@ def draw_status(canvas, state, count):
     cv2.putText(canvas, banner, (10, 24), _FONT, 0.6, (0, 0, 0), 1, cv2.LINE_AA)
 
 
-def lock_exposure(cap, exposure):
-    """Switch the camera to manual exposure at a fixed level.
+def frame_on_black(canvas, margin=DISPLAY_MARGIN):
+    """Center the overlaid canvas on a larger solid-black background.
 
-    Auto-exposure reacts to the dark background and over-exposes the scene; a fixed
-    exposure removes that coupling. On UVC/V4L2 backends CAP_PROP_AUTO_EXPOSURE is
-    0.25 for manual and 0.75 for auto. Support varies by camera and backend, so the
-    requested value is read back and reported rather than assumed to have taken.
+    This is a display-only presentation step: it adds a uniform black border so
+    the canvas is not cropped flush to the window edge. It does not alter the warp
+    or any coordinates, which are computed on the original WARP_SIZE canvas before
+    this is called.
 
     Args:
-        cap: An opened cv2.VideoCapture.
-        exposure: The manual exposure level in the backend's units.
+        canvas: The warped BGR image (already overlaid) to frame.
+        margin: Black border width in pixels added on every side.
+
+    Returns:
+        A new BGR image of size (h + 2*margin, w + 2*margin) with the canvas
+        centered on black.
     """
-    cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)
-    cap.set(cv2.CAP_PROP_EXPOSURE, exposure)
-    applied = cap.get(cv2.CAP_PROP_EXPOSURE)
-    print(f"Requested manual exposure {exposure}; camera reports {applied}.")
+    h, w = canvas.shape[:2]
+    framed = np.zeros((h + 2 * margin, w + 2 * margin, 3), dtype=canvas.dtype)
+    framed[margin:margin + h, margin:margin + w] = canvas
+    return framed
 
 
 def save_capture(canvas):
@@ -177,14 +178,14 @@ def main():
         print(f"Error: cannot open camera at index {CAMERA_INDEX}.")
         return
 
-    if MANUAL_EXPOSURE is not None:
-        lock_exposure(cap, MANUAL_EXPOSURE)
-
     detector = StabilityDetector()
     prev_corners = None
     detections = []
 
-    print("Running. Press 'q' to quit, 'r' to force re-analysis, 'c' to save a capture.")
+    print(
+        "Running. Press 'q' to quit, 'r' to force re-analysis, 'c' to save a "
+        "capture, 'f' to peek at the full camera frame."
+    )
     while True:
         ok, frame = cap.read()
         if not ok:
@@ -209,7 +210,12 @@ def main():
         canvas = warped.copy()
         draw_detections(canvas, detections)
         draw_status(canvas, state, len(detections))
-        cv2.imshow("Canvas", canvas)
+
+        # Present the overlaid canvas inside a cosmetic black frame so it is not
+        # cropped flush to the window edge. Detection and coordinates were already
+        # computed on `warped` above, so this display step changes nothing.
+        display = frame_on_black(canvas)
+        cv2.imshow("Canvas", display)
 
         key = cv2.waitKey(1) & 0xFF
         if key == ord("q"):
@@ -217,8 +223,15 @@ def main():
         if key == ord("r"):
             detections = detect_objects(warped)
         if key == ord("c"):
-            path = save_capture(canvas)
+            path = save_capture(display)
             print(f"Capture: {path}")
+        if key == ord("f"):
+            # Briefly show the full raw camera frame so the operator can re-frame
+            # the canvas and background. This is a live-setup aid only; it does not
+            # affect detection. The 1000 ms wait blocks the loop on purpose.
+            cv2.imshow("Full frame", frame)
+            cv2.waitKey(1000)
+            cv2.destroyWindow("Full frame")
 
     cap.release()
     cv2.destroyAllWindows()

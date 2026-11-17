@@ -20,15 +20,18 @@ original contour is returned unchanged.
 
 Limitation: watershed can still over-segment large, chunky 3D prisms whose lit
 faces create several distance-transform peaks of similar height. The minimum-
-separation merge reduces this but cannot eliminate it, because distance alone
-cannot distinguish two close peaks ON ONE big block from two genuinely separate
-small objects touching. Measured counterexample: two touching large red blocks
-only collapse to the correct 2 seeds at MIN_SEED_SEPARATION ~100-130, but two
-touching smaller blue cubes (centers <100 px apart) already merge to 1 at that
-same separation, so no single threshold satisfies both. The common cases
-(different-color touching, and moderately sized same-color touching such as the
-blue cubes at the default separation) are handled, as required; a tight cluster
-of large same-color 3D blocks is the documented hard case.
+separation merge (MIN_SEED_SEPARATION) reduces this but CANNOT eliminate it, and a
+parameter sweep on the final object set proved the trade-off is irreducible:
+keeping two genuinely TOUCHING red rectangles reported separately needs the
+separation <=70 px, whereas merging a tall block's spurious face-peaks into one
+object needs >=100 px. These windows do not overlap, so no single threshold
+satisfies both — distance alone cannot distinguish two peaks ON ONE big block from
+two real same-color objects touching, because both occupy the same distance range.
+The separation is therefore kept low (50) so the failure, when it happens, is
+OVER-segmentation (an extra, visible contour on a big block) rather than
+UNDER-merging (two real touching objects silently counted as one), the safer and
+more explainable error for a live demo. This over-segmentation of large same-color
+3D blocks is the documented accepted limitation.
 
 Public API:
     separate_contour(blob_mask) -> list of per-object contours
@@ -52,6 +55,16 @@ PEAK_WINDOW = 31
 # Seeds closer than this (in warped pixels) are merged into one, keeping the seed
 # on the higher distance value. This removes the several near-equal peaks a single
 # chunky object can generate without merging genuinely distinct object centers.
+#
+# Kept deliberately LOW (50). A sweep on the final object set proved no single
+# value avoids both failure modes: keeping two genuinely TOUCHING red rectangles
+# separate needs separation <=70, while merging a tall block's spurious face-peaks
+# needs >=100 — the two requirements do not overlap, because distance alone cannot
+# tell "two peaks on one block" from "two real touching objects" (they share the
+# same distance range). 50 is chosen so the system errs toward OVER-segmentation
+# (an extra, visible contour) rather than UNDER-merging (two real objects silently
+# reported as one), which is the safer, more explainable failure. See the module
+# docstring limitation note.
 MIN_SEED_SEPARATION = 50
 
 # Small kernel to coalesce adjacent peak pixels into single connected seeds.

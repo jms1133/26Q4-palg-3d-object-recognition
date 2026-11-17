@@ -7,7 +7,7 @@ objects by hue while rejecting two kinds of unwanted pixels:
     - the matte WHITE sheet, which has very low saturation, and
     - dark CAST SHADOWS from the 3D objects, which have very low value (V).
 
-The object set has four colors: red, gold, green and blue. The thresholds below
+The object set has four colors: red, yellow, green and blue. The thresholds below
 were measured from warped captures of the real objects on the sheet. Those
 measurements drove two design choices that a naive per-color ``inRange`` cannot
 handle:
@@ -70,11 +70,11 @@ RED_SAT_FLOOR = 60
 # floor at 80 sits in the clean gap: it rejects the sheet while keeping the cubes.
 BLUE_SAT_FLOOR = 80
 
-# Gold needs a higher saturation floor than the other colors. The warm light cast
-# on the white sheet lands in the gold hue band at low saturation (measured ~30-60)
+# Yellow needs a higher saturation floor than the other colors. The warm light cast
+# on the white sheet lands in the yellow hue band at low saturation (measured ~30-60)
 # and would paint a false yellow halo across the background; the real yellow
 # objects are vivid (S~125), so this floor keeps them while rejecting the bleed.
-GOLD_SAT_FLOOR = 75
+YELLOW_SAT_FLOOR = 75
 
 # Per-color HSV bounds as lists of (lower, upper) pairs, used to build
 # segmentation masks. These mirror the measured hue bands; red spans two sub-
@@ -85,8 +85,8 @@ COLOR_RANGES = {
         ((0, RED_SAT_FLOOR, VALUE_FLOOR), (12, 255, 255)),
         ((168, RED_SAT_FLOOR, VALUE_FLOOR), (180, 255, 255)),
     ],
-    "gold": [
-        ((13, GOLD_SAT_FLOOR, VALUE_FLOOR), (34, 255, 255)),
+    "yellow": [
+        ((13, YELLOW_SAT_FLOOR, VALUE_FLOOR), (34, 255, 255)),
     ],
     "green": [
         ((40, SAT_FLOOR, GREEN_VALUE_FLOOR), (GREEN_BLUE_HUE - 1, 255, 255)),
@@ -228,7 +228,7 @@ def classify_color_hsv(hsv_sample):
         2. The shadow guard rejects truly black pixels.
         3. The sheet guard rejects pixels that are BOTH pale and bright (the
            white sheet).
-        4. The remaining hue bands (red, gold, blue) are unambiguous; red uses a
+        4. The remaining hue bands (red, yellow, blue) are unambiguous; red uses a
            saturation floor to reject the warm sheet cast near the 0/180 seam.
 
     Args:
@@ -259,11 +259,11 @@ def classify_color_hsv(hsv_sample):
     if h <= 12 or h >= 168:
         return "red" if s >= RED_SAT_FLOOR else "white"
 
-    # 5. Remaining unambiguous hue bands. Gold and blue each use a higher
+    # 5. Remaining unambiguous hue bands. Yellow and blue each use a higher
     #    saturation floor to reject the warm/cool sheet cast that lands in their
     #    hue bands at moderate saturation.
     if 13 <= h <= 34:
-        return "gold" if s >= GOLD_SAT_FLOOR else "white"
+        return "yellow" if s >= YELLOW_SAT_FLOOR else "white"
     if GREEN_BLUE_HUE <= h <= 120:
         return "blue" if s >= BLUE_SAT_FLOOR else "white"
     return "unknown"

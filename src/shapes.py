@@ -6,8 +6,8 @@ color, each contour here already belongs to a single color; this module adds the
 object's SHAPE and its normalized POSITION to complete the required
 (shape, color, position) description for each object.
 
-The object set is polygonal: triangles/pyramids, quadrilaterals (cubes and
-cuboids imaged as four-sided tops/faces) and pentagons (pentagon-prisms). A
+The object set is polygonal: triangles/pyramids, four-sided tops split into
+squares (cubes) and rectangles (cuboids), and pentagons (pentagon-prisms). A
 ``circle`` branch is kept for a possible sphere or cylinder top, which images as
 a near-circular contour, even though the current set contains none.
 
@@ -15,7 +15,12 @@ Classification combines several contour features rather than relying on vertex
 count alone, because the polygon approximation is unstable on its own. The
 measured features that separate the shapes are:
 
-    - vertices: ``approxPolyDP`` corner count (3 triangle, 4 quad, 5 pentagon).
+    - vertices: ``approxPolyDP`` corner count (3 triangle, 4 four-sided,
+      5 pentagon).
+    - rotated aspect ratio ``minAreaRect`` long/short side: splits a four-sided
+      top into square (cube, ~1.0) and rectangle (cuboid, ~1.5). It is rotation-
+      invariant, unlike the axis-aligned bounding box, so it holds for tilted 3D
+      objects.
     - circularity ``4*pi*Area / Perimeter^2``: high for round blobs, moderate for
       filled polygons, lower for thin triangles.
     - solidity ``Area / ConvexHullArea``: reported for diagnostics. It is NOT used
@@ -53,30 +58,48 @@ CIRCLE_CIRCULARITY = 0.80
 # and quadrilaterals at 4.
 APPROX_EPS_FACTOR = 0.05
 
+# Rotation-invariant aspect ratio (minAreaRect long side / short side) at or above
+# which a four-sided top face is a rectangle (cuboid) rather than a square (cube).
+# Measured on warped captures: cube tops sit near 1.0-1.1 and cuboid tops near
+# 1.4-1.5, so a 1.25 split cleanly separates them. The axis-aligned bounding box
+# cannot be used here because 3D objects image rotated; the rotated rectangle is
+# orientation-independent.
+SQUARE_MAX_ASPECT = 1.25
+
 # Kernel used to erode an object's mask to an interior core before sampling its
 # color, so glossy tops and shadowed edges contribute less (per CLAUDE.md 5D).
 _INTERIOR_KERNEL = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
 
-# Map a stable vertex count to its polygon label.
-_VERTEX_SHAPES = {3: "triangle", 4: "quadrilateral", 5: "pentagon"}
+# Canonical vertex count for each polygon label. Square and rectangle are BOTH
+# four-sided tops: vertex count cannot tell them apart, so they share count 4 and
+# are separated later by aspect ratio (see classify_shape / SQUARE_MAX_ASPECT).
+_SHAPE_VERTICES = {
+    "triangle": 3,
+    "square": 4,
+    "rectangle": 4,
+    "pentagon": 5,
+}
 
-# Canonical vertex count for each polygon label, used to snap a raw contour to the
-# nearest shape the color is physically allowed to be (see ALLOWED_SHAPES).
-_SHAPE_VERTICES = {"triangle": 3, "quadrilateral": 4, "pentagon": 5}
-
-# Shapes that physically exist in each color of the object set, as {label: vertex
-# count}. This domain prior corrects the dominant failure mode of imaging 3D
-# objects: a block's darker side faces and cast shadows are captured alongside its
-# top face, so the silhouette gains spurious corners (a cuboid reads as 5-6
-# vertices, a shaded triangle as 4). Because these extra corners are physics, not
-# noise we can threshold away, each raw vertex count is snapped to the NEAREST
-# vertex count the color actually admits. Colors are only ever mapped onto their
-# own real shapes, so a genuine triangle or pentagon is never invented.
+# Shapes that physically exist in each color of the object set. This domain prior
+# corrects the dominant failure mode of imaging 3D objects: a block's darker side
+# faces and cast shadows are captured alongside its top face, so the silhouette
+# gains spurious corners (a cuboid reads as 5-6 vertices, a shaded triangle as 4).
+# Because these extra corners are physics, not noise we can threshold away, each
+# raw vertex count is snapped to the NEAREST vertex count the color actually
+# admits. Colors are only ever mapped onto their own real shapes, so a genuine
+# triangle or pentagon is never invented.
+#
+# Square (cube) vs rectangle (cuboid) share vertex count 4. In the object set no
+# single color owns BOTH: blue and yellow have only squares, red and green have only
+# rectangles. So the color prior alone resolves which four-sided shape an object
+# is, and the aspect ratio only matters as a tie-break for a color that admits
+# both (none currently). This keeps square/rectangle robust without leaning on a
+# single aspect-ratio threshold.
 ALLOWED_SHAPES = {
-    "blue": {"quadrilateral": 4},
-    "red": {"triangle": 3, "quadrilateral": 4},
-    "gold": {"quadrilateral": 4, "pentagon": 5},
-    "green": {"triangle": 3, "pentagon": 5},
+    "blue": {"square"},
+    "red": {"triangle", "rectangle"},
+    "yellow": {"square", "pentagon"},
+    "green": {"triangle", "pentagon", "rectangle"},
 }
 
 
@@ -92,6 +115,10 @@ def shape_metrics(contour):
             perimeter: Contour arc length (closed).
             circularity: 4*pi*Area / Perimeter^2 (0 if perimeter is 0).
             aspect_ratio: Bounding-box width / height (0 if height is 0).
+            rotated_aspect: minAreaRect long side / short side (>= 1.0, or 0 if
+                the short side is 0). Orientation-independent, so it separates a
+                square (cube) top from a rectangle (cuboid) top even when the
+                object images rotated.
             solidity: Area / convex-hull area (0 if hull area is 0).
             vertices: approxPolyDP corner count at APPROX_EPS_FACTOR.
     """
@@ -102,6 +129,10 @@ def shape_metrics(contour):
 
     _, _, w, h = cv2.boundingRect(contour)
     aspect_ratio = w / float(h) if h > 0 else 0.0
+
+    (_, (rw, rh), _) = cv2.minAreaRect(contour)
+    long_side, short_side = max(rw, rh), min(rw, rh)
+    rotated_aspect = long_side / short_side if short_side > 0 else 0.0
 
     hull_area = cv2.contourArea(cv2.convexHull(contour))
     solidity = area / hull_area if hull_area > 0 else 0.0
@@ -114,9 +145,25 @@ def shape_metrics(contour):
         "perimeter": perimeter,
         "circularity": circularity,
         "aspect_ratio": aspect_ratio,
+        "rotated_aspect": rotated_aspect,
         "solidity": solidity,
         "vertices": vertices,
     }
+
+
+def _quad_label(rotated_aspect):
+    """Label a four-sided top as "square" or "rectangle" by its aspect ratio.
+
+    A cube top images as a near-square (rotated aspect ~1.0-1.1) and a cuboid top
+    as an elongated rectangle (~1.4-1.5), so SQUARE_MAX_ASPECT splits them.
+
+    Args:
+        rotated_aspect: The minAreaRect long/short side ratio (>= 1.0).
+
+    Returns:
+        "square" if the ratio is below SQUARE_MAX_ASPECT, else "rectangle".
+    """
+    return "square" if rotated_aspect < SQUARE_MAX_ASPECT else "rectangle"
 
 
 def classify_shape(contour):
@@ -125,9 +172,10 @@ def classify_shape(contour):
     The rules are applied in order:
         1. Reject contours below MIN_CONTOUR_AREA as noise ("unknown").
         2. A high-circularity contour is a "circle" (sphere / cylinder top).
-        3. Otherwise map the approxPolyDP vertex count to a polygon label
-           (3 triangle, 4 quadrilateral, 5 pentagon). Any other count is
-           "unknown".
+        3. Map the approxPolyDP vertex count to a polygon family
+           (3 triangle, 4 four-sided, 5 pentagon). Any other count is "unknown".
+        4. A four-sided top is further split into "square" (cube) or "rectangle"
+           (cuboid) by its rotation-invariant aspect ratio.
 
     Separating same-color objects that touch and merge into one contour is NOT
     done here (solidity cannot reliably distinguish such a blob from a legitimate
@@ -138,7 +186,8 @@ def classify_shape(contour):
         contour: An OpenCV contour (Nx1x2 int array).
 
     Returns:
-        One of "triangle", "quadrilateral", "pentagon", "circle", or "unknown".
+        One of "triangle", "square", "rectangle", "pentagon", "circle", or
+        "unknown".
     """
     m = shape_metrics(contour)
 
@@ -148,10 +197,16 @@ def classify_shape(contour):
     if m["circularity"] >= CIRCLE_CIRCULARITY:
         return "circle"
 
-    return _VERTEX_SHAPES.get(m["vertices"], "unknown")
+    if m["vertices"] == 3:
+        return "triangle"
+    if m["vertices"] == 4:
+        return _quad_label(m["rotated_aspect"])
+    if m["vertices"] == 5:
+        return "pentagon"
+    return "unknown"
 
 
-def constrain_shape_to_color(shape, vertices, color_name):
+def constrain_shape_to_color(shape, vertices, color_name, rotated_aspect=None):
     """Snap a raw shape to the nearest shape the color can physically be.
 
     This corrects the dominant 3D-imaging artifact described on ALLOWED_SHAPES:
@@ -159,7 +214,13 @@ def constrain_shape_to_color(shape, vertices, color_name):
     vertices and a shaded triangle as 4. Using the raw approxPolyDP vertex count,
     the object is mapped to whichever allowed shape has the nearest canonical vertex
     count, with ties broken toward fewer vertices so a clean triangle is never
-    pulled up to a quadrilateral.
+    pulled up to a four-sided shape.
+
+    Square (cube) and rectangle (cuboid) both have four corners, so vertex count
+    alone cannot tell them apart. When the snap lands on the four-sided family and
+    the color admits BOTH, the aspect ratio decides; if it admits only one, that
+    one is used. A four-sided artifact (e.g. a 6-vertex 3D cuboid) is therefore
+    still resolved to the correct square/rectangle.
 
     A "circle" is left untouched (roundness, not a vertex count, defines it). For a
     color with no known allowed set, the raw label is returned unchanged.
@@ -168,6 +229,9 @@ def constrain_shape_to_color(shape, vertices, color_name):
         shape: The raw shape label from classify_shape.
         vertices: The raw approxPolyDP vertex count for the same contour.
         color_name: The object's classified color.
+        rotated_aspect: The contour's rotation-invariant aspect ratio, used to
+            pick square vs rectangle. Falls back to SQUARE_MAX_ASPECT (square) if
+            not provided.
 
     Returns:
         The possibly corrected shape label.
@@ -184,10 +248,18 @@ def constrain_shape_to_color(shape, vertices, color_name):
 
     # Snap to the allowed shape whose canonical vertex count is closest to the
     # measured count; break ties toward fewer vertices (the simpler shape).
-    return min(
+    target = min(
         allowed,
         key=lambda name: (abs(_SHAPE_VERTICES[name] - vertices), _SHAPE_VERTICES[name]),
     )
+
+    # If the snap landed on a four-sided shape and the color admits BOTH square
+    # and rectangle, the aspect ratio (not vertex count) decides which one.
+    if target in ("square", "rectangle") and {"square", "rectangle"} <= allowed:
+        aspect = SQUARE_MAX_ASPECT if rotated_aspect is None else rotated_aspect
+        return _quad_label(aspect)
+
+    return target
 
 
 def sample_contour_color(contour, hsv):
@@ -259,9 +331,10 @@ def describe_object(contour, hsv, size):
     norm = calibration.pixel_to_normalized(centroid[0], centroid[1], size)
 
     object_color = sample_contour_color(contour, hsv)
+    metrics = shape_metrics(contour)
     raw_shape = classify_shape(contour)
     object_shape = constrain_shape_to_color(
-        raw_shape, shape_metrics(contour)["vertices"], object_color
+        raw_shape, metrics["vertices"], object_color, metrics["rotated_aspect"]
     )
 
     return {

@@ -6,3 +6,5 @@ __pycache__/
 .CLAUDE/
 docs/
 images/
+uvc-util-app
+uvc-util/

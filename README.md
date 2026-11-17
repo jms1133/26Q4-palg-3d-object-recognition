@@ -37,11 +37,14 @@ workspace with detected objects outlined and labeled.
 
 ### Controls
 
-| Key | Action                                   |
-|-----|------------------------------------------|
-| `q` | Quit                                     |
-| `r` | Force re-analysis of the current frame   |
-| `c` | Save the current canvas to a PNG         |
+| Key | Action                                                     |
+|-----|------------------------------------------------------------|
+| `q` | Quit                                                       |
+| `r` | Force re-analysis of the current frame                     |
+| `c` | Save the current canvas to a PNG                           |
+| `f` | Briefly show the full raw camera frame (to re-frame setup) |
+| `n` | Decrease camera exposure (only when exposure control is active) |
+| `m` | Increase camera exposure (only when exposure control is active) |
 
 Captured images are written to `images/main_test/` (the folder is created
 automatically on the first capture).
@@ -54,12 +57,48 @@ enumerate as `0` on one computer and `1` or `2` on another, and it is not always
 distinct from a built-in camera. If the wrong device opens, or the camera fails
 to open, edit `CAMERA_INDEX` and try `0`, `1`, or `2`.
 
+## Camera exposure control (optional)
+
+A dark background can make the camera's auto-exposure overexpose and wash out the
+white canvas. The application can optionally lock the exposure so the canvas
+highlights sit at a fixed level, keeping colors saturated. This is **best-effort**
+and platform-dependent; if it is not available the app silently falls back to the
+camera's auto-exposure and runs normally.
+
+- **Linux:** handled automatically through OpenCV's V4L2 properties
+  (`CAP_PROP_AUTO_EXPOSURE` / `CAP_PROP_EXPOSURE`). No extra setup is needed. If
+  the specific camera/driver rejects the write, auto-exposure is used instead.
+- **macOS (optional):** macOS/AVFoundation ignores OpenCV exposure writes, so a
+  small native helper binary named `uvc-util-app` is used if present in the
+  project root. It is **not** required and is not included in the submission. To
+  enable it, run these three commands **from the project root**, one at a time:
+
+  ```bash
+  git clone https://github.com/jtfrey/uvc-util.git
+  ```
+
+  ```bash
+  (cd uvc-util/src && gcc -o "$OLDPWD/uvc-util-app" -framework IOKit -framework Foundation uvc-util.m UVCController.m UVCType.m UVCValue.m)
+  ```
+
+  ```bash
+  rm -rf uvc-util
+  ```
+
+  Each build command is a single line (no line-continuation backslashes). The
+  second line compiles the binary into the project root; the third removes the
+  now-unneeded source. If the binary is absent, macOS simply runs with
+  auto-exposure. Exposure units are camera-specific; the
+  built-in values target the Aukey webcam used during development.
+
+When exposure control is active, the `n` / `m` keys fine-tune the exposure live.
+
 ## Notes for running on Linux
 
 - The application needs a graphical session; `cv2.imshow` cannot open a window
   over a headless/SSH connection.
-- Camera exposure and white balance are handled automatically in software, so no
-  camera-specific driver settings are required.
+- White balance is handled automatically in software. Exposure is handled as
+  described in the section above and never requires manual driver configuration.
 
 ## Hardware and physical setup
 
@@ -88,6 +127,7 @@ requirements.txt    Runtime dependencies
 src/
   calibration.py    Corner detection and perspective warp
   color.py          HSV color masking and white balance
+  exposure.py       Optional per-platform camera exposure control (macOS/Linux)
   hsv_sampler.py    Interactive HSV sampling helper
   segmentation.py   Touching-object separation (distance transform / watershed)
   shapes.py         Shape classification and object description

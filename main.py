@@ -17,6 +17,9 @@ Controls:
     q - quit
     r - force re-analysis of the current frame
     c - save the current canvas to a timestamped PNG
+    f - peek at the full raw camera frame
+    n - decrease hardware exposure (macOS only; no-op otherwise)
+    m - increase hardware exposure (macOS only; no-op otherwise)
 
 Run from the project root so the ``src`` package resolves:
 
@@ -30,6 +33,7 @@ import cv2
 import numpy as np
 
 from src import calibration, color, segmentation, shapes
+from src.exposure import make_exposure_controller
 from src.stability import StabilityDetector
 
 # Index of the capture device. This is machine-dependent: the same USB webcam
@@ -51,6 +55,9 @@ DISPLAY_MARGIN = 60
 
 # Target color buckets to detect, drawn from color.COLOR_RANGES.
 TARGET_COLORS = ("red", "yellow", "green", "blue")
+
+# Exposure units changed per 'n'/'m' key press for manual on-the-fly tuning.
+EXPOSURE_STEP = 10
 
 # BGR outline/label color per detected object color, for readable overlays.
 DRAW_COLORS = {
@@ -178,14 +185,27 @@ def main():
         print(f"Error: cannot open camera at index {CAMERA_INDEX}.")
         return
 
+    # Optional hardware exposure control, resolved per platform (macOS uses the
+    # uvc-util-app helper; Linux uses OpenCV's V4L2 properties). If the platform is
+    # unsupported, the helper is missing, or the driver rejects the write, the
+    # controller reports unavailable and every call is a harmless no-op, leaving the
+    # camera's auto-exposure in charge. When available, lock exposure once so the
+    # canvas whites are not blown out by auto-exposure averaging over the dark border.
+    exposure = make_exposure_controller(CAMERA_INDEX, cap)
+    if exposure.available:
+        exposure.calibrate(cap)
+
     detector = StabilityDetector()
     prev_corners = None
     detections = []
 
-    print(
+    controls = (
         "Running. Press 'q' to quit, 'r' to force re-analysis, 'c' to save a "
-        "capture, 'f' to peek at the full camera frame."
+        "capture, 'f' to peek at the full camera frame"
     )
+    if exposure.available:
+        controls += ", 'n'/'m' to adjust exposure"
+    print(controls + ".")
     while True:
         ok, frame = cap.read()
         if not ok:
@@ -232,6 +252,14 @@ def main():
             cv2.imshow("Full frame", frame)
             cv2.waitKey(1000)
             cv2.destroyWindow("Full frame")
+        if key == ord("n"):
+            value = exposure.nudge(-EXPOSURE_STEP)
+            if value is not None:
+                print(f"Exposure decreased to {value}.")
+        if key == ord("m"):
+            value = exposure.nudge(EXPOSURE_STEP)
+            if value is not None:
+                print(f"Exposure increased to {value}.")
 
     cap.release()
     cv2.destroyAllWindows()
